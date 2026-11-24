@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>نظام الحضور</title>
+  <style>
+    body { font-family: Tahoma, Arial, sans-serif; max-width: 560px; margin: 24px auto; padding: 0 16px; color: #0f172a; }
+    h1 { font-size: 22px; }
+    .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+    .ok { border-color: #16a34a; background: #f0fdf4; }
+    .bad { border-color: #dc2626; background: #fef2f2; }
+    .muted { color: #64748b; font-size: 13px; }
+    button { font: inherit; background: #1e40af; color: #fff; border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; margin: 4px 0; }
+    button.secondary { background: #475569; }
+    pre { direction: ltr; text-align: left; background: #f1f5f9; padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+    td { padding: 3px 8px; vertical-align: top; }
+    #gbtn { min-height: 44px; margin: 8px 0; }
+  </style>
+  <script src="config.js"></script>
+</head>
+<body>
+  <h1>نظام الحضور</h1>
+  <div id="status" class="card">جارٍ التحضير…</div>
+  <div id="gbtn"></div>
+  <div id="tests" style="display:none" class="card">
+    <b>اختبارات إضافية</b><br>
+    <button id="btnMe">١. تحقق من الجلسة (auth.me)</button><br>
+    <button id="btnForged" class="secondary">٢. جلسة مزوّرة باسم مستخدم آخر (يجب أن تُرفض)</button><br>
+    <button id="btnReuse" class="secondary">٣. إعادة استخدام نفس تسجيل الدخول (يجب أن يُرفض)</button>
+    <div id="testOut"></div>
+  </div>
+  <div class="card muted">عنوان هذه الصفحة (يُستخدم في إعداد Google):<pre id="origin"></pre></div>
+  <pre id="log"></pre>
+  <p class="muted" dir="ltr">Attendance pages, sign-in test 0.3.0</p>
+
+<script>
+(function () {
+  'use strict';
+  var CFG = window.ATTENDANCE_CONFIG || {};
+  var ROLE_AR = { Owner: 'مالك النظام', Admin: 'مسؤول', Supervisor: 'مشرف', Professor: 'أستاذ', TA: 'معيد' };
+  var token = null;          // session token, page memory only (Stage B 2.2)
+  var lastCredential = null; // kept only for test 3
+  var logLines = [];
+
+  function el(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function rid() { return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+  function log(line) { logLines.push(line); el('log').textContent = logLines.join('\n'); }
+  function status(cls, html) { el('status').className = 'card ' + cls; el('status').innerHTML = html; }
+  function rolesText(roles) {
+    return roles && roles.length ? roles.map(function (r) { return ROLE_AR[r] || r; }).join('، ') : 'لا توجد أدوار بعد';
+  }
+
+  // One call to the backend. Sent as plain text so the browser makes a simple request.
+  function call(req, done) {
+    req.clientRequestId = rid();
+    fetch(CFG.BACKEND_URL, { method: 'POST', body: JSON.stringify(req), redirect: 'follow' })
+      .then(function (r) { return r.json(); })
+      .then(done)
+      .catch(function (err) { done({ success: false, errorCode: 'CALL_FAILED', message: 'تعذّر الاتصال بالخادم. ' + String(err && err.message || err) }); });
+  }
+
+  el('origin').textContent = location.origin;
+  log('ORIGIN: ' + location.origin);
+  log('DEVICE: ' + (/Mobi|Android|iPhone/i.test(navigator.userAgent) ? 'phone' : 'computer'));
+
+  function start() {
+    el('gbtn').innerHTML = '';
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(CFG.BACKEND_URL || '')) {
+      status('bad', 'لم يُضبط عنوان الخادم في config.js بعد.');
+      log('START: BACKEND_URL not set in config.js');
+      return;
+    }
+    status('', 'جارٍ التحضير…');
+    call({ op: 'auth.startSignIn' }, function (res) {
+      if (!res || !res.success) {
+        status('bad', esc(res && res.message));
+        log('START: ' + (res && res.errorCode));
+        return;
+      }
+      log('BACKEND: reachable');
+      if (!res.data.clientId) {
+        status('bad', 'لم يُضبط GOOGLE_CLIENT_ID في الخادم بعد.');
+        log('START: GOOGLE_CLIENT_ID not set in the Backend');
+        return;
+      }
+      loadGoogle(res.data.clientId, res.data.nonce);
+    });
+  }
+
+  function loadGoogle(clientId, nonce) {
+    var init = function () {
+      try {
+        google.accounts.id.initialize({
+          client_id: clientId,
+          nonce: nonce,
+          callback: onGoogleCredential,
+          ux_mode: 'popup',
+          auto_select: false,
+          cancel_on_tap_outside: true
+        });
+        google.accounts.id.renderButton(el('gbtn'), { theme: 'outline', size: 'large', text: 'signin_with', locale: 'ar', width: 280 });
+        status('', 'اضغط زر Google واختر حسابك.');
+        log('GOOGLE: library loaded, button requested');
+        setTimeout(function () {
+          var shown = el('gbtn').querySelector('iframe, div[role=button]');
+          log('GOOGLE: button ' + (shown ? 'shown' : 'NOT shown after 8 s'));
+          if (!shown && !token) status('bad', 'لم يظهر زر Google. يرجى إرسال لقطة شاشة لهذه الصفحة.');
+        }, 8000);
+      } catch (e) {
+        status('bad', 'تعذّر تشغيل تسجيل الدخول من Google.');
+        log('GOOGLE: init error ' + e);
+      }
+    };
+    if (window.google && google.accounts && google.accounts.id) { init(); return; }
+    var s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = init;
+    s.onerror = function () { status('bad', 'تعذّر تحميل تسجيل الدخول من Google.'); log('GOOGLE: library failed to load'); };
+    document.head.appendChild(s);
+  }
+
+  function onGoogleCredential(resp) {
+    log('GOOGLE: credential received (' + (resp && resp.select_by) + ')');
+    if (!resp || !resp.credential) { status('bad', 'لم يُرسل Google بيانات الدخول.'); return; }
+    lastCredential = resp.credential;
+    status('', 'جارٍ التحقق…');
+    call({ op: 'auth.signInWithGoogle', input: { credential: resp.credential } }, function (res) {
+      if (res && res.success) {
+        token = res.data.token;
+        var u = res.data.user;
+        el('gbtn').innerHTML = '';
+        status('ok',
+          '<b>تم تسجيل الدخول</b><table>' +
+          '<tr><td>الاسم</td><td>' + esc(u.DisplayName || '—') + '</td></tr>' +
+          '<tr><td>البريد</td><td dir="ltr">' + esc(u.Email) + '</td></tr>' +
+          '<tr><td>رقم المستخدم</td><td dir="ltr">' + esc(u.UserID) + '</td></tr>' +
+          '<tr><td>الأدوار</td><td>' + esc(rolesText(u.roles)) + '</td></tr>' +
+          '<tr><td>تنتهي الجلسة</td><td dir="ltr">' + esc(res.data.expiresAt) + '</td></tr></table>');
+        el('tests').style.display = '';
+        log('RESULT: SIGNED_IN ' + u.UserID + ' ' + u.Email + ' roles=' + (u.roles.join(',') || '-'));
+      } else {
+        status('bad', esc(res && res.message) + '<br><button id="again">تسجيل الدخول بحساب آخر</button>');
+        el('again').onclick = start;
+        log('RESULT: ' + (res && res.errorCode) + '  requestId=' + (res && res.requestId || '-'));
+      }
+    });
+  }
+
+  el('btnMe').onclick = function () {
+    call({ op: 'auth.me', token: token }, function (res) {
+      var ok = res && res.success;
+      el('testOut').innerHTML = '<p>' + (ok ? '✓ الجلسة صالحة: ' + esc(res.data.user.UserID) + ' — ' + esc(rolesText(res.data.roles))
+                                            : '✗ ' + esc(res && res.message)) + '</p>';
+      log('TEST 1 auth.me: ' + (ok ? 'OK ' + res.data.user.UserID : 'FAILED ' + (res && res.errorCode)));
+    });
+  };
+
+  // Changes the user inside the session token and keeps the old signature.
+  el('btnForged').onclick = function () {
+    var forged;
+    try {
+      var parts = token.split('.');
+      var b64 = parts[0].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var p = JSON.parse(atob(b64));
+      p.uid = p.uid === 'USR-0002' ? 'USR-0003' : 'USR-0002';
+      forged = btoa(JSON.stringify(p)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + '.' + parts[1];
+    } catch (e) { forged = 'x' + token; }
+    call({ op: 'auth.me', token: forged }, function (res) {
+      var refused = res && !res.success && res.errorCode === 'UNAUTHORIZED';
+      el('testOut').innerHTML = '<p>' + (refused ? '✓ تم رفض الجلسة المزوّرة كما هو متوقع.' : '✗ لم تُرفض الجلسة المزوّرة. يرجى إبلاغي فوراً.') + '</p>';
+      log('TEST 2 forged session: ' + (refused ? 'REFUSED (correct)' : 'NOT REFUSED (problem)'));
+    });
+  };
+
+  // Sends the same Google sign-in again. Its one-time number is used, so it must be refused.
+  el('btnReuse').onclick = function () {
+    call({ op: 'auth.signInWithGoogle', input: { credential: lastCredential } }, function (res) {
+      var refused = res && !res.success && res.errorCode === 'UNAUTHORIZED';
+      el('testOut').innerHTML = '<p>' + (refused ? '✓ تم رفض إعادة الاستخدام كما هو متوقع.' : '✗ قُبلت إعادة الاستخدام. يرجى إبلاغي فوراً.') + '</p>';
+      log('TEST 3 reuse sign-in: ' + (refused ? 'REFUSED (correct)' : 'NOT REFUSED (problem)'));
+    });
+  };
+
+  start();
+})();
+</script>
+</body>
+</html>
