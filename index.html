@@ -6,7 +6,7 @@
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#1e3a8a">
   <title>نظام الحضور</title>
-  <!-- Attendance System pages, Phase 3 Stage D step 3, version 0.5.0 -->
+  <!-- Attendance System pages, Phase 3 Stage D step 4, version 0.6.0 -->
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: "Segoe UI", Tahoma, "Noto Naskh Arabic", Arial, sans-serif; font-size: 16px; color: #0f172a; background: #f1f5f9; line-height: 1.5; }
@@ -43,6 +43,10 @@
     table.info { width: 100%; border-collapse: collapse; }
     table.info td { padding: 6px 4px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
     table.info td:first-child { color: #64748b; width: 38%; font-size: 14px; }
+    .actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .actions button { min-height: 38px; padding: 6px 12px; font-size: 14px; }
+    label.check { display: flex; align-items: center; gap: 8px; }
+    label.check input { width: auto; min-height: 0; }
     .roleline { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f1f5f9; }
     #gbtn { min-height: 44px; margin: 12px 0; display: flex; justify-content: center; }
     #overlay { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: flex-end; justify-content: center; z-index: 10; }
@@ -161,11 +165,37 @@
       <button class="link" data-go="accounts">→ الرجوع للحسابات</button>
     </section>
 
+    <!-- Academic structure: a small menu, then one generic list/form screen -->
+    <section id="vAcademic" hidden>
+      <h2>الهيكل الأكاديمي</h2>
+      <div class="menu" id="acMenu"></div>
+      <button class="link" data-go="home">→ الرجوع للقائمة</button>
+    </section>
+
+    <section id="vEntity" hidden>
+      <div class="row" style="align-items:center">
+        <h2 style="flex:2" id="eTitle"></h2>
+        <button id="eAdd" style="flex:0 0 auto" hidden>+ إضافة</button>
+      </div>
+      <div id="eFilter"></div>
+      <p class="muted" id="eHint"></p>
+      <div class="card" id="eForm" hidden>
+        <b id="eFormTitle"></b>
+        <div id="eFields"></div>
+        <div class="row" style="margin-top:14px">
+          <button id="eSave">حفظ</button>
+          <button class="secondary" id="eCancel">إلغاء</button>
+        </div>
+      </div>
+      <div id="eList"></div>
+      <button class="link" data-go="academic">→ الرجوع للهيكل الأكاديمي</button>
+    </section>
+
     <details>
       <summary class="muted">تفاصيل تقنية (للدعم)</summary>
       <pre id="log"></pre>
     </details>
-    <p class="muted" dir="ltr" style="text-align:center">Attendance pages 0.5.0</p>
+    <p class="muted" dir="ltr" style="text-align:center">Attendance pages 0.6.0</p>
   </main>
 
   <!-- Confirmation sheet (no browser pop-ups) -->
