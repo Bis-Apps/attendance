@@ -1,9 +1,10 @@
 /*
  * Attendance System - pages: app.js
- * Phase 3, Stage D, step 3 (accounts). Version 0.5.0
+ * Phase 3, Stage D, step 4 (academic structure). Version 0.6.0
  *
- * Sign-in (as proven in step 1c), the menu built from the user's roles, and the
- * accounts screens (Owner and Admin). The page only shows and asks: every rule and
+ * Sign-in (as proven in step 1c), the menu built from the user's roles, the
+ * accounts screens (Owner and Admin) and the academic structure screens (step 4:
+ * years, terms, levels, absence policies; Supervisors see them read-only). The page only shows and asks: every rule and
  * permission is checked again by the backend (Stage B 3, "hiding is not security").
  * The session token is kept in page memory only (Stage B 2): closing or reloading
  * the page signs out.
@@ -22,16 +23,35 @@
     FORMULA_NOT_ALLOWED: 'لا يمكن أن يبدأ النص بعلامة =.',
     INVALID_FOREIGN_KEY: 'السجل المرتبط غير موجود.',
     NOT_IN_LIST: 'قيمة غير مسموح بها.',
-    UNKNOWN_FIELD: 'حقل غير معروف.'
+    UNKNOWN_FIELD: 'حقل غير معروف.',
+    INVALID_YEAR_LABEL: 'اكتب العام بالشكل 2026/2027 (السنة الثانية تلي الأولى).',
+    END_BEFORE_START: 'تاريخ النهاية يجب أن يكون بعد تاريخ البداية.',
+    OUTSIDE_YEAR: 'التاريخ خارج العام الدراسي.',
+    EXCLUDES_TERM: 'يوجد فصل دراسي خارج هذه التواريخ.',
+    OUT_OF_RANGE: 'القيمة خارج المدى المسموح.',
+    INVALID_INTEGER: 'اكتب رقماً صحيحاً.',
+    INVALID_DATE: 'تاريخ غير صحيح.'
   };
   var RULE_AR = {
     U24: 'لكل بريد إلكتروني حساب واحد فقط.',
     U25: 'لكل عضو هيئة تدريس حساب واحد فقط.',
     U27: 'هذا الدور ممنوح لهذا الحساب بالفعل.',
     U28: 'يجب أن يبقى للنظام مالك واحد بحساب مفعّل.',
+    U02: 'هذا العام مسجل بالفعل.',
+    U03: 'يكون عام واحد فقط هو العام الحالي.',
+    U04: 'لكل عام فصل أول واحد وفصل ثانٍ واحد وفصل صيفي واحد.',
+    U05: 'يوجد فصل آخر جارٍ بالفعل. أغلقه أولاً.',
+    U06: 'رقم المستوى مستخدم بالفعل.',
+    U22: 'لكل فصل سياسة واحدة للمحاضرات وواحدة للسكاشن.',
+    B05: 'توجد محاضرات أو سكاشن ستقع خارج تواريخ الفصل أو عدد أسابيعه.',
+    B21: 'يجب ضبط سياستي الغياب (المحاضرات والسكاشن) قبل بدء الفصل، ويضبطهما المالك فقط.',
+    'C-5': 'لا يمكن إغلاق الفصل وفيه محاضرة أو سكشن مفتوح لم يُنهَ بعد.',
     B20: 'دورا الأستاذ والمعيد يحتاجان ربط الحساب بسجل عضو هيئة تدريس، ولا يُمنح حساب النظام أي دور، ودورا المالك والمسؤول يمنحهما المالك فقط.'
   };
   var PAGE_SIZE = 50;
+  var TERM_AR = { First: 'الفصل الأول', Second: 'الفصل الثاني', Summer: 'الفصل الصيفي' };
+  var SEMSTATUS_AR = { Planned: 'مخطط', Active: 'جارٍ', Closed: 'مغلق' };
+  var TYPE_AR = { Lecture: 'المحاضرات', Section: 'السكاشن' };
 
   var S = {
     token: null, user: null, menus: [], grantable: [],
@@ -56,7 +76,7 @@
   function rolesText(list) { return list && list.length ? list.map(roleText).join('، ') : 'لا توجد أدوار'; }
 
   function show(view) {
-    ['vSignin', 'vHome', 'vAccounts', 'vCreate', 'vAccount'].forEach(function (v) { el(v).hidden = v !== view; });
+    ['vSignin', 'vHome', 'vAccounts', 'vCreate', 'vAccount', 'vAcademic', 'vEntity'].forEach(function (v) { el(v).hidden = v !== view; });
     window.scrollTo(0, 0);
   }
   function message(cls, html) {
@@ -168,6 +188,7 @@
 
   // ------------------------------------------------------------------ home and menu
   var MENU = {
+    academic: { label: 'الهيكل الأكاديمي', hint: 'الأعوام والفصول والمستويات وسياسات الغياب', open: function () { openAcademic(); } },
     accounts: { label: 'الحسابات والأدوار', hint: 'إنشاء الحسابات ومنح الأدوار وتفعيلها', open: function () { openAccounts(); } }
   };
 
@@ -311,6 +332,238 @@
     });
   }
 
+  // ------------------------------------------------------------------ academic structure (step 4)
+  // One generic screen: a list, an add/edit form built from the entity's fields, and
+  // per-row actions. The backend says in each list whether this user may edit (canEdit).
+  function dates(a, b) { return '<span dir="ltr">' + esc(a) + '</span> إلى <span dir="ltr">' + esc(b) + '</span>'; }
+  function opts(list, labels) { return list.map(function (v) { return { v: v, t: labels ? labels[v] : v }; }); }
+  var lookup = { years: [], semesters: [] };
+  function loadLookup(name) {
+    var op = name === 'years' ? 'years.list' : 'semesters.list';
+    return call(op, { pageSize: 200 }).then(function (res) { if (res.success) lookup[name] = res.data.rows; return res; });
+  }
+  function semLabel(s) { return (TERM_AR[s.Term] || s.Term) + ' ' + (s.YearLabel || ''); }
+
+  var ENT = {
+    years: {
+      title: 'الأعوام الدراسية', list: 'years.list', id: 'AcademicYearID', idKey: 'academicYearId',
+      create: 'years.create', update: 'years.update',
+      fields: [
+        { k: 'yearLabel', col: 'YearLabel', label: 'العام', type: 'text', ltr: true, ph: '2026/2027', req: true },
+        { k: 'startDate', col: 'StartDate', label: 'تاريخ بداية العام', type: 'date', req: true },
+        { k: 'endDate', col: 'EndDate', label: 'تاريخ نهاية العام', type: 'date', req: true }
+      ],
+      head: function (r) { return r.YearLabel; },
+      body: function (r) { return dates(r.StartDate, r.EndDate) + '<br><span class="muted">عدد الفصول: ' + r.Semesters + '</span>'; },
+      chips: function (r) { return r.IsCurrent ? [['العام الحالي', 'on']] : []; },
+      actions: function (r) {
+        return r.IsCurrent ? [] : [{ label: 'تعيين كعام حالي', op: 'years.setCurrent', input: { academicYearId: r.AcademicYearID }, ok: 'تم تعيين العام الحالي.' }];
+      }
+    },
+    semesters: {
+      title: 'الفصول الدراسية', list: 'semesters.list', id: 'SemesterID', idKey: 'semesterId',
+      create: 'semesters.create', update: 'semesters.update', needs: ['years'],
+      hint: 'يبدأ الفصل «مخططاً»، ثم «جارٍ» بعد ضبط سياستي الغياب، ثم «مغلق» نهائياً. الأسبوع الأول هو 7 أيام تبدأ من تاريخ بداية الفصل.',
+      fields: [
+        { k: 'academicYearId', col: 'AcademicYearID', label: 'العام الدراسي', type: 'select', createOnly: true, req: true,
+          options: function () { return lookup.years.map(function (y) { return { v: y.AcademicYearID, t: y.YearLabel }; }); } },
+        { k: 'term', col: 'Term', label: 'الفصل', type: 'select', req: true, options: function () { return opts(['First', 'Second', 'Summer'], TERM_AR); } },
+        { k: 'startDate', col: 'StartDate', label: 'تاريخ بداية الفصل (أول يوم في الأسبوع الأول)', type: 'date', req: true },
+        { k: 'endDate', col: 'EndDate', label: 'تاريخ نهاية الفصل', type: 'date', req: true },
+        { k: 'teachingWeeks', col: 'TeachingWeeks', label: 'عدد أسابيع الدراسة (1 إلى 20)', type: 'number', req: true }
+      ],
+      head: function (r) { return semLabel(r); },
+      body: function (r) {
+        return dates(r.StartDate, r.EndDate) + '<br><span class="muted">أسابيع الدراسة: ' + r.TeachingWeeks +
+          ' · سياسة المحاضرات: ' + (r.HasLecturePolicy ? 'مضبوطة' : 'غير مضبوطة') + ' · سياسة السكاشن: ' + (r.HasSectionPolicy ? 'مضبوطة' : 'غير مضبوطة') + '</span>';
+      },
+      chips: function (r) { return [[SEMSTATUS_AR[r.Status] || r.Status, r.Status === 'Active' ? 'on' : (r.Status === 'Closed' ? 'off' : '')]]; },
+      editable: function (r) { return r.Status !== 'Closed'; },
+      actions: function (r) {
+        if (r.Status === 'Planned') return [{ label: 'بدء الفصل (جارٍ)', op: 'semesters.setStatus', input: { semesterId: r.SemesterID, status: 'Active' }, ok: 'أصبح الفصل جارياً.',
+          confirm: 'بدء «' + semLabel(r) + '»؟ لا يكون إلا فصل واحد جارٍ في نفس الوقت.' }];
+        if (r.Status === 'Active') return [{ label: 'إغلاق الفصل', op: 'semesters.setStatus', input: { semesterId: r.SemesterID, status: 'Closed' }, ok: 'تم إغلاق الفصل.', danger: true,
+          confirm: 'إغلاق «' + semLabel(r) + '» نهائياً؟ لا يمكن إعادة فتحه بعد الإغلاق.' }];
+        return [];
+      }
+    },
+    levels: {
+      title: 'المستويات', list: 'levels.list', id: 'LevelID', idKey: 'levelId',
+      create: 'levels.create', update: 'levels.update',
+      fields: [
+        { k: 'levelNumber', col: 'LevelNumber', label: 'رقم المستوى', type: 'number', req: true },
+        { k: 'nameAr', col: 'NameAr', label: 'الاسم بالعربي', type: 'text', req: true, ph: 'الفرقة الأولى' },
+        { k: 'nameEn', col: 'NameEn', label: 'الاسم بالإنجليزي (اختياري)', type: 'text', ltr: true },
+        { k: 'isActive', col: 'IsActive', label: 'المستوى مفعّل', type: 'check', updateOnly: true }
+      ],
+      head: function (r) { return r.NameAr; },
+      body: function (r) { return '<span class="muted">رقم المستوى: ' + r.LevelNumber + (r.NameEn ? ' · <span dir="ltr">' + esc(r.NameEn) + '</span>' : '') + '</span>'; },
+      chips: function (r) { return [[r.IsActive ? 'مفعّل' : 'غير مفعّل', r.IsActive ? 'on' : 'off']]; }
+    },
+    policies: {
+      title: 'سياسات الغياب', list: 'policies.list', id: 'PolicyID', create: 'policies.set', setStyle: true, needs: ['semesters'],
+      hint: 'سياسة لكل فصل: واحدة للمحاضرات وواحدة للسكاشن. يضبطها مالك النظام فقط، ويطبَّق أي تغيير على المراجعات التي تُفتح بعده.',
+      fields: [
+        { k: 'semesterId', col: 'SemesterID', label: 'الفصل', type: 'select', lockOnEdit: true, req: true,
+          options: function () { return lookup.semesters.map(function (x) { return { v: x.SemesterID, t: semLabel(x) }; }); } },
+        { k: 'sessionType', col: 'SessionType', label: 'النوع', type: 'select', lockOnEdit: true, req: true, options: function () { return opts(['Lecture', 'Section'], TYPE_AR); } },
+        { k: 'maxAllowedAbsences', col: 'MaxAllowedAbsences', label: 'أقصى عدد غيابات مسموح', type: 'number', req: true },
+        { k: 'finalizationDeadlineDays', col: 'FinalizationDeadlineDays', label: 'مهلة إنهاء المحاضرة بالأيام (0 = نفس اليوم)', type: 'number', req: true },
+        { k: 'notes', col: 'Notes', label: 'ملاحظات (اختياري)', type: 'text' }
+      ],
+      head: function (r) { return (TYPE_AR[r.SessionType] || r.SessionType) + ' · ' + (TERM_AR[r.Term] || r.Term) + ' ' + r.YearLabel; },
+      body: function (r) {
+        return 'أقصى غياب مسموح: <b>' + r.MaxAllowedAbsences + '</b><br>مهلة الإنهاء: ' + (r.FinalizationDeadlineDays === 0 ? 'نفس اليوم' : r.FinalizationDeadlineDays + ' يوم') +
+          (r.Notes ? '<br><span class="muted">' + esc(r.Notes) + '</span>' : '');
+      },
+      chips: function () { return []; }
+    }
+  };
+
+  var E = { name: null, rows: [], canEdit: false, editing: null };
+
+  function openAcademic() {
+    var m = el('acMenu'); m.innerHTML = '';
+    ['years', 'semesters', 'levels', 'policies'].forEach(function (k) {
+      var b = document.createElement('button');
+      b.innerHTML = '<b>' + esc(ENT[k].title) + '</b>';
+      b.onclick = function () { message(); openEntity(k); };
+      m.appendChild(b);
+    });
+    show('vAcademic');
+  }
+
+  function openEntity(name) {
+    E.name = name; E.editing = null;
+    var ent = ENT[name];
+    el('eTitle').textContent = ent.title;
+    el('eHint').textContent = ent.hint || '';
+    el('eForm').hidden = true;
+    el('eList').innerHTML = '';
+    show('vEntity');
+    var needs = (ent.needs || []).map(loadLookup);
+    Promise.all(needs).then(function () { return loadEntity(); });
+  }
+
+  function loadEntity() {
+    var ent = ENT[E.name];
+    return call(ent.list, { pageSize: 200 }).then(function (res) {
+      if (!res.success) { message('bad', failText(res)); return; }
+      E.rows = res.data.rows; E.canEdit = res.data.canEdit === true;
+      el('eAdd').hidden = !E.canEdit;
+      renderEntity();
+    });
+  }
+
+  function renderEntity() {
+    var ent = ENT[E.name], box = el('eList');
+    box.innerHTML = '';
+    if (!E.rows.length) box.innerHTML = '<p class="muted">لا توجد سجلات بعد.</p>';
+    E.rows.forEach(function (r) {
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<b>' + esc(ent.head(r)) + '</b> ' +
+        ent.chips(r).map(function (c) { return '<span class="chip ' + c[1] + '">' + esc(c[0]) + '</span>'; }).join('') +
+        '<div style="margin-top:6px">' + ent.body(r) + '</div>';
+      if (E.canEdit) {
+        var act = document.createElement('div'); act.className = 'actions';
+        if (!ent.editable || ent.editable(r)) {
+          var ed = document.createElement('button'); ed.className = 'secondary'; ed.textContent = 'تعديل';
+          ed.onclick = function () { openForm(r); };
+          act.appendChild(ed);
+        }
+        (ent.actions ? ent.actions(r) : []).forEach(function (a) {
+          var b = document.createElement('button'); b.textContent = a.label; if (a.danger) b.className = 'danger';
+          b.onclick = function () {
+            var go = function () { busyButton(b, call(a.op, a.input)).then(function (res) { afterEntity(res, a.ok); }); };
+            if (a.confirm) confirmSheet(a.confirm, go); else go();
+          };
+          act.appendChild(b);
+        });
+        card.appendChild(act);
+      }
+      box.appendChild(card);
+    });
+  }
+
+  function openForm(row) {
+    var ent = ENT[E.name];
+    E.editing = row || null;
+    el('eFormTitle').textContent = row ? 'تعديل: ' + ent.head(row) : 'إضافة';
+    var f = el('eFields'); f.innerHTML = '';
+    ent.fields.forEach(function (fd) {
+      if (row && fd.createOnly) return;
+      if (!row && fd.updateOnly) return;
+      var v = row ? row[fd.col] : '';
+      var id = 'f_' + fd.k, html;
+      if (fd.type === 'check') {
+        html = '<label class="check"><input type="checkbox" id="' + id + '"' + (v ? ' checked' : '') + '> ' + esc(fd.label) + '</label>';
+      } else {
+        html = '<label for="' + id + '">' + esc(fd.label) + '</label>';
+        if (fd.type === 'select') {
+          html += '<select id="' + id + '"' + (row && fd.lockOnEdit ? ' disabled' : '') + '><option value="">اختر…</option>' +
+            fd.options().map(function (o) { return '<option value="' + esc(o.v) + '"' + (String(v) === String(o.v) ? ' selected' : '') + '>' + esc(o.t) + '</option>'; }).join('') + '</select>';
+        } else {
+          html += '<input id="' + id + '" type="' + (fd.type === 'number' ? 'text' : fd.type) + '"' + (fd.type === 'number' ? ' inputmode="numeric"' : '') +
+            (fd.ltr ? ' class="ltr"' : '') + (fd.ph ? ' placeholder="' + esc(fd.ph) + '"' : '') + ' value="' + esc(v === undefined || v === null ? '' : v) + '" autocomplete="off">';
+        }
+      }
+      html += '<div class="err" id="' + id + '_err"></div>';
+      var d = document.createElement('div'); d.innerHTML = html; f.appendChild(d);
+    });
+    el('eForm').hidden = false;
+    el('eForm').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function readField(fd) {
+    var e = el('f_' + fd.k);
+    if (!e) return undefined;
+    if (fd.type === 'check') return e.checked;
+    var v = e.value.trim();
+    if (v === '') return undefined;
+    if (fd.type === 'number') { var n = Number(v.replace(/[٠-٩]/g, function (d) { return '٠١٢٣٤٥٦٧٨٩'.indexOf(d); })); return isNaN(n) ? v : n; }
+    return v;
+  }
+
+  function saveForm() {
+    var ent = ENT[E.name], row = E.editing, input = {}, missing = false;
+    ent.fields.forEach(function (fd) {
+      if (row && fd.createOnly) return;
+      if (!row && fd.updateOnly) return;
+      var v = readField(fd);
+      el('f_' + fd.k + '_err').textContent = '';
+      if (row && fd.lockOnEdit) v = row[fd.col];
+      if (v === undefined) { if (fd.req && (!row || ent.setStyle)) { el('f_' + fd.k + '_err').textContent = FIELD_AR.REQUIRED; missing = true; } return; }
+      if (row && !ent.setStyle && String(v) === String(row[fd.col])) return;   // send only what changed
+      input[fd.k] = v;
+    });
+    if (missing) return;
+    if (row && !ent.setStyle) {
+      if (!Object.keys(input).length) { message('', 'لم يتغير شيء.'); el('eForm').hidden = true; return; }
+      input[ent.idKey] = row[ent.id];
+    }
+    var op = row && !ent.setStyle ? ent.update : ent.create;
+    busyButton(el('eSave'), call(op, input)).then(function (res) {
+      (res.fieldErrors || []).forEach(function (fe) {
+        var k = String(fe.field).replace(/^input\./, ''), box = el('f_' + k + '_err');
+        if (box) box.textContent = FIELD_AR[fe.code] || fe.message || fe.code;
+      });
+      if (!res.success) { message('bad', failText(res)); return; }
+      el('eForm').hidden = true;
+      if (res.data && res.data.changed === false) { message('', 'لم يتغير شيء.'); return; }
+      afterEntity(res, 'تم الحفظ.');
+    });
+  }
+
+  function afterEntity(res, okText) {
+    if (!res.success) { message('bad', failText(res)); window.scrollTo(0, 0); return; }
+    var w = warningsText(res);
+    message(w ? 'warn' : 'ok', esc(okText) + (w ? '<br>' + w : ''));
+    window.scrollTo(0, 0);
+    var needs = (ENT[E.name].needs || []).map(loadLookup);
+    Promise.all(needs).then(loadEntity);
+  }
+
   // ------------------------------------------------------------------ confirmation sheet
   var confirmAction = null;
   function confirmSheet(text, action) {
@@ -335,7 +588,7 @@
       b.onclick = function () {
         message();
         var go = b.getAttribute('data-go');
-        if (go === 'home') loadHome(); else if (go === 'accounts') openAccounts();
+        if (go === 'home') loadHome(); else if (go === 'accounts') openAccounts(); else if (go === 'academic') openAcademic();
       };
     });
     ROLES.forEach(function (r) {
@@ -390,6 +643,9 @@
       };
       if (to) go(); else confirmSheet('إيقاف هذا الحساب؟ لن يتمكن صاحبه من الدخول، ويخرج من النظام في طلبه التالي. يمكن تفعيله لاحقاً.', go);
     };
+    el('eAdd').onclick = function () { message(); openForm(null); };
+    el('eSave').onclick = saveForm;
+    el('eCancel').onclick = function () { el('eForm').hidden = true; };
     el('confirmYes').onclick = function () { var a = confirmAction; closeSheet(); if (a) a(); };
     el('confirmNo').onclick = closeSheet;
   }
